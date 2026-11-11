@@ -73,6 +73,7 @@ Threads 由 Instagram 提供，所以《Threads 使用條款》和《Instagram �
 | `blob[n] s3://cache/….jpg` | 圖片 |
 | `stream[n] s3://cache/….mp4` | 影片 |
 | `caused by:` | 被引用的貼文 |
+| `pending` / `acked` | 未讀／已讀的對話 |
 | `upstream idle`、`session expired` 等訊息 | 沒有更多貼文、登入過期等狀態 |
 
 以下的說明沿用偽裝後的用語：「上游」就是 Threads，「記錄」就是貼文，「驗證」就是登入。
@@ -205,14 +206,17 @@ docker compose run --rm --service-ports logtail
 
 ```
 12:30:57.962 INFO  [mq] listing channels ...
-  │  1 usr=friend_a age=3週 最後一則訊息的預覽
-  │  2 usr=friend_b age=7週 ...
+  │  1 pending usr=friend_a age=5分鐘 最後一則訊息的預覽
+  │  2 acked   usr=friend_b age=7週 ...
 channel #> 1
 12:31:02.197 INFO  [mq-friend_a] rx usr=friend_a
   │ 對方傳來的訊息
 12:31:02.197 DEBUG [mq-friend_a] tx usr=me
   │ 你傳出去的訊息
 ```
+
+- **未讀標示**：列表中 `pending` 是有未讀訊息的對話，`acked` 是已讀。
+- **未讀提醒**：滑動態牆時如果出現新的未讀對話，會印出一行 `WARN [mq] pending=1 unread channel(s) — press m`。未讀狀態在每次載入頁面時更新（啟動、按 `R`、切換動態牆、搜尋、按 `m`），不是即時推播。
 
 進入後會先顯示最近 15 則，之後有新訊息會自動印出來。對話中的按鍵：
 

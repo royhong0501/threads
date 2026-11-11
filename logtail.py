@@ -622,6 +622,57 @@ THREAD_JS = """() => [...document.querySelectorAll('div[role="grid"] div[data-vi
 }).filter(Boolean)"""
 
 COMPOSER = 'div[role="textbox"][contenteditable="true"]'
+
+
+class Mailbox:
+    """未讀狀態。每個頁面載入時都會發出訊息徽章查詢，回應裡有各對話的 is_unread。"""
+
+    def __init__(self, ctx):
+        self.unread: set[str] = set()   # 未讀對話的 thread id
+        self.notified: set[str] = set()  # 已經在動態牆上提醒過的
+        self._tasks: set[asyncio.Task] = set()
+        ctx.on("response", self._on_response)
+
+    def _on_response(self, resp) -> None:
+        if "graphql" not in resp.url or "GetBadgeCount" not in (resp.request.post_data or ""):
+            return
+
+        async def handle():
+            try:
+                data = json.loads(await resp.text())
+                edges = data["data"]["get_slide_mailbox_for_iris_subscription"]["threads_by_folder"]["edges"]
+                self.unread = {
+                    str(e["node"]["id"]) for e in edges if (e["node"].get("as_micg_interface") or {}).get("is_unread")
+                }
+            except Exception:
+                pass
+
+        task = asyncio.ensure_future(handle())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def announce(self) -> None:
+        """有新的未讀對話時，在動態牆上提醒一次。"""
+        if self.unread - self.notified:
+            log("WARN", "mq", f"pending={len(self.unread)} unread channel(s) — press m")
+        self.notified = set(self.unread)
+
+
+def thread_id(href: str) -> str:
+    return href.rstrip("/").rsplit("/", 1)[-1]
+
+
+async def dismiss_dialog(page, wait_ms: int = 0) -> None:
+    """關掉訊息頁的功能介紹視窗（只有一個按鈕的對話框）；它會擋住後面所有的點擊。"""
+    try:
+        if wait_ms:
+            await page.wait_for_selector('div[role="dialog"]', timeout=wait_ms)
+        buttons = page.locator('div[role="dialog"] div[role="button"]')
+        if await buttons.count() == 1:
+            await buttons.first.click(timeout=3000)
+            await page.wait_for_timeout(600)
+    except Exception:
+        pass
 CHAT_HINT = "t=傳送訊息, b=老闆鍵, q=離開對話"
 
 
@@ -678,17 +729,23 @@ async def read_thread(page, peer: str) -> list[dict]:
     return msgs
 
 
-async def chat(page, conv: dict, keys: Keys, args) -> None:
+async def chat(page, conv: dict, keys: Keys, args, mailbox: Mailbox) -> None:
     """單一對話：顯示最近的訊息，之後持續輪詢新訊息；按 t 輸入並送出。"""
     peer = conv["name"] or "unknown"
     log("INFO", "mq", f"subscribing channel={peer} ...")
-    await page.locator(f'a[href="{conv["href"]}"]').first.click()
+    await dismiss_dialog(page)
+    try:
+        await page.locator(f'a[href="{conv["href"]}"]').first.click(timeout=6000)
+    except Exception:  # 點不到就直接開對話的網址
+        await page.goto(BASE + conv["href"], wait_until="domcontentloaded", timeout=45000)
     try:
         await page.wait_for_selector('div[role="grid"]', timeout=15000)
     except Exception:
         log("ERROR", "mq", "subscribe failed: channel not ready")
         return
     await page.wait_for_timeout(2000)
+    await dismiss_dialog(page)
+    mailbox.unread.discard(thread_id(conv["href"]))
     msgs = await read_thread(page, peer)
     for m in msgs[-15:]:
         render_msg(m, peer, args.raw_urls)
@@ -709,12 +766,16 @@ async def chat(page, conv: dict, keys: Keys, args) -> None:
             if not text:
                 log("INFO", "mq", "publish cancelled")
                 continue
-            box = page.locator(COMPOSER).last
-            await box.click()
-            await page.keyboard.insert_text(text)
-            await page.wait_for_timeout(random.randint(300, 700))
-            await page.keyboard.press("Enter")
-            log("DEBUG", "mq", f"published channel={peer} bytes={len(text.encode())}")
+            try:
+                await dismiss_dialog(page)
+                box = page.locator(COMPOSER).last
+                await box.click(timeout=6000)
+                await page.keyboard.insert_text(text)
+                await page.wait_for_timeout(random.randint(300, 700))
+                await page.keyboard.press("Enter")
+                log("DEBUG", "mq", f"published channel={peer} bytes={len(text.encode())}")
+            except Exception as e:
+                log("ERROR", "mq", f"publish failed, message NOT sent: {type(e).__name__}")
         elif k in ("h", "?"):
             log("INFO", "mq", CHAT_HINT)
         elif k in ("q", "m", "\x1b", "\x03", "\x04"):
@@ -722,32 +783,32 @@ async def chat(page, conv: dict, keys: Keys, args) -> None:
             return
 
 
-async def messages(ctx, keys: Keys, args) -> None:
+async def messages(ctx, keys: Keys, args, mailbox: Mailbox) -> None:
     """訊息：列出對話，輸入編號進入聊天。"""
     page = await ctx.new_page()
     try:
         log("INFO", "mq", "listing channels ...")
         await page.goto(f"{BASE}/messages/", wait_until="domcontentloaded", timeout=45000)
         try:
-            await page.wait_for_selector('a[href^="/messages/t/"], div[role="dialog"]', timeout=15000)
+            await page.wait_for_selector('a[href^="/messages/t/"]', timeout=15000)
         except Exception:
             pass
-        # 第一次進入訊息頁會跳出只有一個按鈕的功能介紹視窗，先關掉
-        buttons = page.locator('div[role="dialog"] div[role="button"]')
-        if await buttons.count() == 1:
-            await buttons.first.click()
-            await page.wait_for_timeout(1000)
+        # 功能介紹視窗會比對話列表晚一點才跳出來，等它一下再關
+        await dismiss_dialog(page, wait_ms=3000)
         convs = (await page.evaluate(INBOX_JS))[:20]
         if not convs:
             log("WARN", "mq", "no channels")
             return
         for i, c in enumerate(convs, 1):
-            emit(f"{DIM}  │{RST} {C_WARN}{i:>2}{RST} {C_KEY}usr={c['name']} age={c['age']}{RST} {C_TXT}{c['preview'][:40]}{RST}")
+            unread = thread_id(c["href"]) in mailbox.unread
+            state = f"{C_WARN}pending{RST}" if unread else f"{DIM}acked  {RST}"
+            emit(f"{DIM}  │{RST} {C_WARN}{i:>2}{RST} {state} {C_KEY}usr={c['name']} age={c['age']}{RST} {C_TXT}{c['preview'][:40]}{RST}")
+        mailbox.notified = set(mailbox.unread)
         sel = keys.prompt("channel #> ")
         if not sel.isdigit() or not 1 <= int(sel) <= len(convs):
             log("INFO", "mq", "cancelled")
             return
-        await chat(page, convs[int(sel) - 1], keys, args)
+        await chat(page, convs[int(sel) - 1], keys, args, mailbox)
     except Exception as e:
         log("ERROR", "mq", f"channel error: {type(e).__name__}")
     finally:
@@ -835,6 +896,7 @@ async def browse(args) -> int:
                 url, label = FEEDS[feed], feed_label[feed]
             on_feed = not (args.search or args.target)
             src = Source(ctx)
+            mailbox = Mailbox(ctx)
             with Keys() as keys:
                 log("INFO", "main", "connecting upstream ...")
                 await src.open(url)
@@ -854,6 +916,7 @@ async def browse(args) -> int:
                         last, last_thread, n = thread[0], thread, n + 1
                         if args.images:
                             await show_images(ctx, thread, args.img_width)
+                    mailbox.announce()
                     # 等待按鍵（auto 模式下依字數決定停留時間）
                     while True:
                         wait = None
@@ -888,7 +951,7 @@ async def browse(args) -> int:
                             await src.open(url)
                             break
                         elif k == "m":
-                            await messages(ctx, keys, args)
+                            await messages(ctx, keys, args, mailbox)
                             log("INFO", "main", HINT)
                         elif k == "/":
                             q = keys.prompt("grep pattern> ")
@@ -907,7 +970,10 @@ async def browse(args) -> int:
                         elif k in ("h", "?"):
                             show_help()
         finally:
-            await ctx.close()
+            try:
+                await ctx.close()
+            except Exception:  # Ctrl+C 會連瀏覽器一起中斷，此時已經關不了
+                pass
 
 
 async def login() -> int:
