@@ -580,6 +580,180 @@ async def boss_screen(keys: Keys) -> None:
     sys.stdout.flush()
 
 
+# ───────────────────────── 訊息 ─────────────────────────
+# 訊息內容走二進位的 websocket，不像貼文有 JSON 可攔，所以直接從頁面 DOM 讀取。
+INBOX_JS = """() => [...document.querySelectorAll('a[href^="/messages/t/"]')].map(a => {
+  const spans = [...a.querySelectorAll('span[dir="auto"] > span')]
+    .map(s => s.innerText.trim()).filter(t => t && t !== '·');
+  const ab = a.querySelector('abbr');
+  return {href: a.getAttribute('href'), name: spans[0] || '', preview: spans[1] || '',
+          age: ab ? ab.innerText.trim() : ''};
+})"""
+
+THREAD_JS = """() => [...document.querySelectorAll('div[role="grid"] div[data-virtualized]')].map(row => {
+  const side = row.querySelector('div[style*="--x-justifyContent"]');
+  const style = side ? side.getAttribute('style') : '';
+  const mine = style.includes('end');
+  if (!side || !(mine || style.includes('start'))) return null;
+  let ts = '';
+  for (const sp of row.querySelectorAll('span[dir="auto"]')) {
+    // 時間戳在訊息之前；訊息之後的是「已看過」之類的狀態
+    if (side.compareDocumentPosition(sp) & Node.DOCUMENT_POSITION_PRECEDING) { ts = sp.innerText.trim(); break; }
+  }
+  const post = side.querySelector('a[href*="/post/"]');
+  const avatar = side.querySelector('a[href^="/@"]:not([href*="/post/"])');
+  const skip = el => el.closest('[role="gridcell"]') || (post && post.contains(el)) || (avatar && avatar.contains(el));
+  let text = '';
+  for (const sp of side.querySelectorAll('span[dir="auto"]')) {
+    if (skip(sp) || sp.querySelector('span[dir="auto"]')) continue;
+    const t = sp.innerText.trim();
+    if (t) { text = t; break; }   // 第一段是訊息本文，之後的是「已看過」之類的狀態
+  }
+  let shared = null;
+  if (post) {
+    const parts = [...post.querySelectorAll('span[dir="auto"]')]
+      .filter(sp => !sp.querySelector('span[dir="auto"]')).map(sp => sp.innerText.trim()).filter(Boolean);
+    shared = {href: post.getAttribute('href'), text: parts.sort((a, b) => b.length - a.length)[0] || ''};
+  }
+  const imgs = [...side.querySelectorAll('img')]
+    .filter(im => !skip(im) && im.naturalWidth >= 100).map(im => im.src);
+  if (!text && !shared && !imgs.length) return null;
+  return {ts, mine, user: avatar ? avatar.getAttribute('href').slice(2) : '', text, shared, imgs};
+}).filter(Boolean)"""
+
+COMPOSER = 'div[role="textbox"][contenteditable="true"]'
+CHAT_HINT = "t=傳送訊息, b=老闆鍵, q=離開對話"
+
+
+def msg_sig(m: dict) -> tuple:
+    return (m["mine"], m["text"], (m["shared"] or {}).get("href"), len(m["imgs"]))
+
+
+def new_messages(old: list[tuple], cur: list[dict]) -> list[dict]:
+    """比對上次看到的訊息簽章，回傳這次新出現在尾端的訊息。"""
+    sigs = [msg_sig(m) for m in cur]
+    if not old:
+        return cur
+    if len(sigs) >= len(old) and sigs[: len(old)] == old:  # 單純在尾端新增
+        return cur[len(old):]
+    k = min(6, len(old))  # 前面的舊訊息被捲掉或補載入：用最後幾則對齊
+    for i in range(len(sigs) - k, -1, -1):
+        if sigs[i : i + k] == old[-k:]:
+            return cur[i + k :]
+    return []
+
+
+def render_msg(m: dict, peer: str, raw_urls: bool = False) -> None:
+    cols = shutil.get_terminal_size((100, 30)).columns
+    bar = f"{DIM}  │{RST} "
+    if m["ts"]:
+        emit(f"{bar}{DIM}-- {m['ts']} --{RST}")
+    level, color = ("DEBUG", C_DBG) if m["mine"] else ("INFO", C_INFO)
+    kv = "tx usr=me" if m["mine"] else f"rx usr={m['user'] or peer}"
+    emit(f"{C_TS}{now_ts()}{RST} {color}{level:<5}{RST} {C_KEY}[mq-{peer}]{RST} {C_KEY}{kv}{RST}")
+    width = max(20, cols - 5)
+    for ln in wrap(m["text"], width) if m["text"] else []:
+        emit(f"{bar}{C_TXT}{ln}{RST}")
+    if m["shared"]:
+        url = BASE + m["shared"]["href"]
+        code = m["shared"]["href"].rstrip("/").rsplit("/", 1)[-1]
+        emit(f"{bar}{C_KEY}fwd{RST} " + (f"{C_LINK}{url}{RST}" if raw_urls else link(url, f"req={code[:8]}")))
+        for ln in wrap(m["shared"]["text"], width - 4)[:4]:
+            emit(f"{bar}{DIM}  > {ln}{RST}")
+    for i, u in enumerate(m["imgs"]):
+        emit(f"{bar}{C_KEY}blob[{i}]{RST} " + (f"{C_LINK}{u}{RST}" if raw_urls else link(u, f"s3://cache/{fake_name(u, '.jpg')}")))
+
+
+async def read_thread(page, peer: str) -> list[dict]:
+    msgs = await page.evaluate(THREAD_JS)
+    # 連續訊息只有最後一則帶頭像：由後往前補上發話者
+    who = ""
+    for m in reversed(msgs):
+        if m["mine"]:
+            who = ""
+        elif m["user"]:
+            who = m["user"]
+        else:
+            m["user"] = who or peer
+    return msgs
+
+
+async def chat(page, conv: dict, keys: Keys, args) -> None:
+    """單一對話：顯示最近的訊息，之後持續輪詢新訊息；按 t 輸入並送出。"""
+    peer = conv["name"] or "unknown"
+    log("INFO", "mq", f"subscribing channel={peer} ...")
+    await page.locator(f'a[href="{conv["href"]}"]').first.click()
+    try:
+        await page.wait_for_selector('div[role="grid"]', timeout=15000)
+    except Exception:
+        log("ERROR", "mq", "subscribe failed: channel not ready")
+        return
+    await page.wait_for_timeout(2000)
+    msgs = await read_thread(page, peer)
+    for m in msgs[-15:]:
+        render_msg(m, peer, args.raw_urls)
+    seen = [msg_sig(m) for m in msgs]
+    log("INFO", "mq", f"subscribed channel={peer} backlog={len(msgs)} ({CHAT_HINT})")
+    while True:
+        k = await keys.get(random.uniform(1.5, 2.5))
+        if k is None:
+            msgs = await read_thread(page, peer)
+            for m in new_messages(seen, msgs):
+                render_msg(m, peer, args.raw_urls)
+            if msgs:
+                seen = [msg_sig(m) for m in msgs]
+        elif k == "b":
+            await boss_screen(keys)
+        elif k in ("t", "\n", "\r"):
+            text = keys.prompt("publish> ")
+            if not text:
+                log("INFO", "mq", "publish cancelled")
+                continue
+            box = page.locator(COMPOSER).last
+            await box.click()
+            await page.keyboard.insert_text(text)
+            await page.wait_for_timeout(random.randint(300, 700))
+            await page.keyboard.press("Enter")
+            log("DEBUG", "mq", f"published channel={peer} bytes={len(text.encode())}")
+        elif k in ("h", "?"):
+            log("INFO", "mq", CHAT_HINT)
+        elif k in ("q", "m", "\x1b", "\x03", "\x04"):
+            log("INFO", "mq", f"unsubscribed channel={peer}")
+            return
+
+
+async def messages(ctx, keys: Keys, args) -> None:
+    """訊息：列出對話，輸入編號進入聊天。"""
+    page = await ctx.new_page()
+    try:
+        log("INFO", "mq", "listing channels ...")
+        await page.goto(f"{BASE}/messages/", wait_until="domcontentloaded", timeout=45000)
+        try:
+            await page.wait_for_selector('a[href^="/messages/t/"], div[role="dialog"]', timeout=15000)
+        except Exception:
+            pass
+        # 第一次進入訊息頁會跳出只有一個按鈕的功能介紹視窗，先關掉
+        buttons = page.locator('div[role="dialog"] div[role="button"]')
+        if await buttons.count() == 1:
+            await buttons.first.click()
+            await page.wait_for_timeout(1000)
+        convs = (await page.evaluate(INBOX_JS))[:20]
+        if not convs:
+            log("WARN", "mq", "no channels")
+            return
+        for i, c in enumerate(convs, 1):
+            emit(f"{DIM}  │{RST} {C_WARN}{i:>2}{RST} {C_KEY}usr={c['name']} age={c['age']}{RST} {C_TXT}{c['preview'][:40]}{RST}")
+        sel = keys.prompt("channel #> ")
+        if not sel.isdigit() or not 1 <= int(sel) <= len(convs):
+            log("INFO", "mq", "cancelled")
+            return
+        await chat(page, convs[int(sel) - 1], keys, args)
+    except Exception as e:
+        log("ERROR", "mq", f"channel error: {type(e).__name__}")
+    finally:
+        await page.close()
+
+
 # ───────────────────────── 主流程 ─────────────────────────
 COMMANDS = [
     ("space / j", "下一則貼文（Enter 也可以）"),
@@ -587,6 +761,7 @@ COMMANDS = [
     ("r", "展開剛剛那則貼文的回覆（每 8 則暫停，最多 40 則）"),
     ("i", "在終端機內顯示剛剛那則貼文的圖片"),
     ("/", "搜尋關鍵字（輸入後按 Enter，空白則取消）"),
+    ("m", "訊息：列出對話，輸入編號進入聊天（對話中 t 傳送、q 離開）"),
     ("f", "切換 為你推薦 ↔ 追蹤中；在搜尋結果或個人頁時則回到動態牆"),
     ("R", "重新載入目前頁面"),
     ("b", "老闆鍵：切到假的編譯畫面，按任意鍵回來"),
@@ -712,6 +887,9 @@ async def browse(args) -> int:
                             log("INFO", "main", f"reconnecting -> {label}")
                             await src.open(url)
                             break
+                        elif k == "m":
+                            await messages(ctx, keys, args)
+                            log("INFO", "main", HINT)
                         elif k == "/":
                             q = keys.prompt("grep pattern> ")
                             if q:
