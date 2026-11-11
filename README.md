@@ -66,9 +66,17 @@ $ make -j16 all test
 
 ## 安裝
 
+先把專案抓下來，並**進到專案資料夾**。之後所有的安裝與執行指令，都要在這個資料夾裡面下：
+
+```bash
+git clone https://github.com/royhong0501/threads.git
+cd threads
+```
+
 ### Linux
 
 ```bash
+cd threads          # 還沒進到專案資料夾的話
 python3 -m venv .venv
 .venv/bin/pip install playwright pillow
 ```
@@ -78,6 +86,7 @@ python3 -m venv .venv
 在 PowerShell 或命令提示字元中：
 
 ```powershell
+cd threads          # 還沒進到專案資料夾的話
 py -m venv .venv
 .venv\Scripts\pip install playwright pillow
 ```
@@ -87,10 +96,13 @@ py -m venv .venv
 ### Docker
 
 ```bash
+cd threads          # 還沒進到專案資料夾的話
 docker compose build
 ```
 
 ## 快速開始
+
+以下指令同樣要在專案資料夾（`threads/`）裡執行。
 
 Linux：
 
@@ -236,6 +248,7 @@ http://localhost:6080/vnc.html?autoconnect=1&resize=scale
 
 | 狀況 | 處理方式 |
 |---|---|
+| 找不到 `./logtail`、`.\logtail.cmd`，或 Docker 顯示找不到設定檔 | 不在專案資料夾裡，先 `cd threads` |
 | 顯示「尚未登入」 | 執行 `./logtail login` |
 | 顯示 `session expired` | 驗證過期，重新執行 `./logtail login` |
 | 啟動時出現 `ProcessSingleton` 或 profile 已被使用 | 已有另一個 logtail 在執行，先結束它 |
