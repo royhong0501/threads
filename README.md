@@ -1,13 +1,56 @@
 # logtail
 
-以 `tail -f` 的方式檢視上游（upstream）的記錄串流。
+**上班摸魚滑 Threads 用的終端機工具。**
+
+把 Threads 的貼文偽裝成 `tail -f` 的 log 輸出，旁人瞄到你的螢幕，只會覺得你在盯 log。
 
 ```
 15:55:01.594 WARN  [feed-fy] req=DfaNgswk usr=someone age=3d ack=2.3k resp=514 fwd=132
-  │ message body ...
+  │ 貼文內容 ...
   │ blob[0] s3://cache/aabb6eafd6.jpg
   │ stream[0] s3://cache/53e3940c69.mp4
 ```
+
+## 🚨 老闆鍵：按 `b`
+
+有人走過來的時候，按 **`b`**，畫面立刻整個換成假的編譯輸出：
+
+```
+$ make -j16 all test
+[ 231/1284] Compiling core/scheduler.o (412 ms)
+[ 232/1284] PASS  tests/db/migrations_test 17 passed in 1.42s
+[ 233/1284] Linking libgateway.so
+[ 234/1284] warning: cache/lru.c:88: unused variable 'tmp'
+```
+
+- **一鍵切換**：Threads 的內容瞬間從畫面上消失。
+- **會自己動**：假的 build 輸出以不規則的速度持續滾動，看起來就像真的在編譯、跑測試。
+- **按任意鍵回來**：回到原本的畫面，剛剛滑到哪裡都原封不動。
+
+## 偽裝對照表
+
+畫面上看到的每個欄位其實都是 Threads 的東西：
+
+| 畫面上顯示 | 其實是 |
+|---|---|
+| 一筆 log 記錄 | 一則貼文 |
+| `[feed-fy]` | 「為你推薦」動態牆 |
+| `[feed-fw]` | 「追蹤中」動態牆 |
+| `[grep]` | 搜尋結果 |
+| `[usr-name]` | 某個人的個人頁 |
+| `[trace]` | 貼文底下的回覆 |
+| `req=` | 貼文代碼（Ctrl+點擊開啟原貼文） |
+| `usr=` | 發文者 |
+| `ack=` | 讚數（破千的貼文會標成 `WARN`） |
+| `resp=` | 回覆數 |
+| `fwd=` | 轉發數＋引用數 |
+| `via=` | 誰轉發的 |
+| `blob[n] s3://cache/….jpg` | 圖片 |
+| `stream[n] s3://cache/….mp4` | 影片 |
+| `caused by:` | 被引用的貼文 |
+| `upstream idle`、`session expired` 等訊息 | 沒有更多貼文、登入過期等狀態 |
+
+以下的說明沿用偽裝後的用語：「上游」就是 Threads，「記錄」就是貼文，「驗證」就是登入。
 
 ## 需求
 
@@ -123,7 +166,7 @@ http://localhost:6080/vnc.html?autoconnect=1&resize=scale
 | `/` | 輸入過濾關鍵字（Enter 送出；空白直接 Enter 則取消） |
 | `f` | 切換 `feed-fy` ↔ `feed-fw`；在過濾結果或單一來源檢視時則回到串流 |
 | `R` | 重新連線 |
-| `b` | 切換到 build 輸出檢視，按任意鍵返回 |
+| **`b`** | **老闆鍵**：切換到假的 build 輸出畫面，按任意鍵返回 |
 | `h` / `?` | 顯示指令表 |
 | `L` | 清除驗證資料並離開（大寫 L，需按 `y` 確認） |
 | `q` | 離開 |
@@ -143,9 +186,9 @@ http://localhost:6080/vnc.html?autoconnect=1&resize=scale
 | `req=` | 記錄代碼，Ctrl+點擊可開啟原始記錄 |
 | `usr=` | 記錄的來源 |
 | `age=` | 記錄產生至今的時間（`s`、`m`、`h`、`d`） |
-| `ack=` | 確認數 |
-| `resp=` | 子記錄數 |
-| `fwd=` | 轉送數 |
+| `ack=` | 確認數（讚數） |
+| `resp=` | 子記錄數（回覆數） |
+| `fwd=` | 轉送數（轉發數＋引用數） |
 | `via=` | 經由誰轉送（只有轉送的記錄才有） |
 
 記錄內容下方可能出現：
