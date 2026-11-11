@@ -542,16 +542,18 @@ class Keys:
                 tty.setcbreak(self.fd)
 
     def poll(self) -> str | None:
+        """回傳按下的字元；方向鍵回傳 "LEFT"／"RIGHT"／"UP"／"DOWN"，其他功能鍵忽略。"""
         if WINDOWS:
             if not msvcrt.kbhit():
                 return None
             ch = msvcrt.getwch()
-            if ch in ("\x00", "\xe0"):  # 方向鍵、功能鍵：第二碼一併讀掉並忽略
-                msvcrt.getwch()
-                return None
+            if ch in ("\x00", "\xe0"):  # 方向鍵、功能鍵：前導碼 + 第二碼
+                return {"K": "LEFT", "M": "RIGHT", "H": "UP", "P": "DOWN"}.get(msvcrt.getwch())
             return ch
         if select.select([self.fd], [], [], 0)[0]:
             data = os.read(self.fd, 32).decode(errors="ignore")
+            if len(data) >= 3 and data[0] == "\x1b" and data[1] in "[O":  # 方向鍵：ESC [ A/B/C/D
+                return {"D": "LEFT", "C": "RIGHT", "A": "UP", "B": "DOWN"}.get(data[2])
             return data[:1] if data else None
         return None
 
@@ -673,7 +675,7 @@ async def dismiss_dialog(page, wait_ms: int = 0) -> None:
             await page.wait_for_timeout(600)
     except Exception:
         pass
-CHAT_HINT = "t=傳送訊息, b=老闆鍵, q=離開對話"
+CHAT_HINT = "t=傳送訊息, b=老闆鍵, ←或q=離開對話"
 
 
 def msg_sig(m: dict) -> tuple:
@@ -778,7 +780,7 @@ async def chat(page, conv: dict, keys: Keys, args, mailbox: Mailbox) -> None:
                 log("ERROR", "mq", f"publish failed, message NOT sent: {type(e).__name__}")
         elif k in ("h", "?"):
             log("INFO", "mq", CHAT_HINT)
-        elif k in ("q", "m", "\x1b", "\x03", "\x04"):
+        elif k in ("LEFT", "q", "m", "\x1b", "\x03", "\x04"):
             log("INFO", "mq", f"unsubscribed channel={peer}")
             return
 
@@ -822,7 +824,7 @@ COMMANDS = [
     ("r", "展開剛剛那則貼文的回覆（每 8 則暫停，最多 40 則）"),
     ("i", "在終端機內顯示剛剛那則貼文的圖片"),
     ("/", "搜尋關鍵字（輸入後按 Enter，空白則取消）"),
-    ("m", "訊息：列出對話，輸入編號進入聊天（對話中 t 傳送、q 離開）"),
+    ("m", "訊息：列出對話，輸入編號進入聊天（對話中 t 傳送、← 或 q 離開）"),
     ("f", "切換 為你推薦 ↔ 追蹤中；在搜尋結果或個人頁時則回到動態牆"),
     ("R", "重新載入目前頁面"),
     ("b", "老闆鍵：切到假的編譯畫面，按任意鍵回來"),
