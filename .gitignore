@@ -1,0 +1,7 @@
+# 登入狀態（等同憑證，絕不可提交）
+.profile/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
