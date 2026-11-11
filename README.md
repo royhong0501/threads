@@ -27,6 +27,29 @@ $ make -j16 all test
 - **會自己動**：假的 build 輸出以不規則的速度持續滾動，看起來就像真的在編譯、跑測試。
 - **按任意鍵回來**：回到原本的畫面，剛剛滑到哪裡都原封不動。
 
+## ⚠️ 使用風險（請先讀完）
+
+**這個工具違反 Threads 的使用條款，用了帳號就有被限制或停用的風險，請自行評估、自行負責。**
+
+Threads 由 Instagram 提供，所以《Threads 使用條款》和《Instagram 使用條款》同時適用。相關條文如下：
+
+| 條款 | 原文 | 白話 |
+|---|---|---|
+| [Threads 使用條款](https://help.instagram.com/769983657850450)<br>3.1 (iv) | "use any robot, spider, crawlers, scraper or other automatic device, process, software or queries that intercepts, 'mines', scrapes, extracts or otherwise accesses the Threads Service to monitor, extract, copy or collect information or data from the Threads Service, or engage in any manual process to do the same" | 禁止用任何自動化程式存取 Threads 來擷取、複製或蒐集資料。本工具正是這麼做的。 |
+| Threads 使用條款<br>3.1 (iii) | "circumvent, remove, alter, deactivate, degrade or thwart any technological measure or content protections of the Threads Service" | 禁止規避技術保護措施。本工具會隱藏瀏覽器的自動化特徵，可能被認定屬於這一項。 |
+| [Instagram 使用條款](https://help.instagram.com/581066165581870)<br>「你的承諾」 | "You can't attempt to create accounts or access or collect information in unauthorized ways. This includes creating accounts or accessing or collecting information in an automated way without our express permission, regardless of whether such automated access or collection is undertaken while logged-in to an Instagram account." | 未經明確許可，不得以自動化方式存取或蒐集資訊，**登入自己的帳號也一樣**。 |
+| Threads 使用條款<br>第 5 節 | "If you violate these Terms or our policies ... we can refuse to provide or stop providing all or part of the Threads Service to you (including terminating or disabling your access to the Threads Service) without notice" | 違反條款時，Meta 可以**不經通知**終止或停用你的 Threads 存取權。 |
+
+實際上要注意的事：
+
+- **帳號可能被限制或停用。** Threads 帳號與 Instagram 帳號綁在一起，Instagram 條款的處置範圍包含其他 Meta 產品，所以受影響的可能不只 Threads。
+- **「只讀不寫」和「隨機間隔」不構成豁免。** 條款禁止的是自動化存取本身，不論讀寫、頻率。這些設計只是降低被偵測的機率，不保證安全。
+- **Meta 設有專門偵測並封鎖自動化存取的機制**，也曾對大規模擷取資料的業者提起訴訟。個人瀏覽自己的動態牆規模差很多，但條款並沒有區分。
+- **建議不要用你的主要帳號。**
+- **上班摸魚本身的風險**（公司的電腦與網路使用規範、被主管發現）不在本文件的保障範圍內，老闆鍵也不保證有效。
+
+以上條文擷取自 [Open Terms Archive](https://github.com/OpenTermsArchive/pga-versions) 於 2026 年 6 月（Threads）與 8 月（Instagram）存檔的歐洲地區版本；各地區的版本用字可能略有不同，條款也會更新，請以官方頁面的現行內容為準。本說明不是法律意見。
+
 ## 偽裝對照表
 
 畫面上看到的每個欄位其實都是 Threads 的東西：
@@ -52,96 +75,47 @@ $ make -j16 all test
 
 以下的說明沿用偽裝後的用語：「上游」就是 Threads，「記錄」就是貼文，「驗證」就是登入。
 
-## 需求
-
-三種執行方式擇一：
-
-| 方式 | 需求 |
-|---|---|
-| Linux | Google Chrome、Python 3.12 以上 |
-| Windows | Windows 10 以上、Google Chrome、Python 3.12 以上，建議使用 Windows Terminal |
-| Docker | Docker（含 Compose），不需要另外安裝 Chrome 或 Python |
-
-終端機都需要支援 24-bit 色彩。
-
-## 安裝
-
-先把專案抓下來，並**進到專案資料夾**。之後所有的安裝與執行指令，都要在這個資料夾裡面下：
+## 安裝與啟動
 
 ```bash
 git clone https://github.com/royhong0501/threads.git
 cd threads
 ```
 
-### Linux
+**以下所有指令都要在 `threads/` 資料夾裡執行。** 三種方式擇一：
+
+**Linux**（需要 Google Chrome、Python 3.12+）
 
 ```bash
-cd threads          # 還沒進到專案資料夾的話
 python3 -m venv .venv
 .venv/bin/pip install playwright pillow
+./logtail login     # 登入，只需一次
+./logtail           # 開始滑
 ```
 
-### Windows
-
-在 PowerShell 或命令提示字元中：
+**Windows**（需要 Google Chrome、Python 3.12+，建議用 Windows Terminal）
 
 ```powershell
-cd threads          # 還沒進到專案資料夾的話
 py -m venv .venv
 .venv\Scripts\pip install playwright pillow
-```
-
-不需要執行 `playwright install`，程式直接使用系統的 Chrome。
-
-### Docker
-
-```bash
-cd threads          # 還沒進到專案資料夾的話
-docker compose build
-```
-
-## 快速開始
-
-以下指令同樣要在專案資料夾（`threads/`）裡執行。
-
-Linux：
-
-```bash
-./logtail login     # 第一次使用：向上游驗證（只需一次）
-./logtail           # 開始檢視
-```
-
-Windows：
-
-```powershell
 .\logtail.cmd login
 .\logtail.cmd
 ```
 
-`login` 會開啟一個瀏覽器視窗，完成驗證並看到首頁後把視窗關掉即可。之後都在背景執行，不會有視窗。
-
-進入後按 `h` 可以看指令表。
-
-本文件其餘的範例都以 `./logtail` 表示；Windows 請換成 `.\logtail.cmd`，Docker 請換成 `docker compose run --rm --service-ports logtail`。
-
-### 使用 Docker
+**Docker**（不需要另外裝 Chrome 或 Python）
 
 ```bash
-docker compose run --rm --service-ports logtail login   # 第一次使用
-docker compose run --rm --service-ports logtail         # 開始檢視
+docker compose build
+docker compose run --rm --service-ports logtail login
+docker compose run --rm --service-ports logtail
 ```
 
-容器裡沒有螢幕，所以 `login` 會把瀏覽器視窗開在虛擬螢幕上，並印出一個網址：
+- `login` 會開啟瀏覽器視窗，登入並看到首頁後把視窗關掉即可；之後都在背景執行。
+- Docker 的 `login` 會印出 `http://localhost:6080/vnc.html?...`，用主機的瀏覽器打開它來操作登入視窗，登入成功後會自動關閉。這個畫面沒有密碼，只綁定本機、只在 `login` 期間存在。
+- Docker 的登入資料存在名為 `profile` 的 volume 裡，不在專案資料夾。
+- 進入後按 `h` 看指令表。終端機需支援 24-bit 色彩。
 
-```
-http://localhost:6080/vnc.html?autoconnect=1&resize=scale
-```
-
-用主機的瀏覽器開啟這個網址，就能操作容器裡的登入視窗。偵測到驗證成功後視窗會自動關閉，指令也隨之結束。
-
-- 這個遠端畫面沒有密碼，連接埠只綁定在本機（`127.0.0.1:6080`），而且只在 `login` 期間存在。
-- 驗證資料存放在名為 `profile` 的 Docker volume 中，不在專案資料夾裡。
-- 選項與參數照常接在後面，例如 `docker compose run --rm --service-ports logtail -f -a`。
+下文的範例都寫 `./logtail`；Windows 換成 `.\logtail.cmd`，Docker 換成 `docker compose run --rm --service-ports logtail`。
 
 ## 啟動方式
 
@@ -238,7 +212,7 @@ http://localhost:6080/vnc.html?autoconnect=1&resize=scale
 
 ## 注意事項
 
-- **服務條款**：自動化存取不符合上游的使用條款。本工具只讀取、不寫入，請求也有隨機間隔，但不保證帳號不受限制。
+- **服務條款**：自動化存取違反 Threads 與 Instagram 的使用條款，帳號可能被限制或停用，詳見上方「使用風險」。
 - **憑證保管**：`.profile/` 等同登入狀態，不要分享、上傳或提交到版本控制。
 - **單一執行個體**：同一時間只能執行一個 logtail。
 - **超連結**：Ctrl+點擊會用一般瀏覽器分頁開啟。
