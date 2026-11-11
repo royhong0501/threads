@@ -1,0 +1,19 @@
+services:
+  logtail:
+    build: .
+    image: logtail
+    init: true
+    stdin_open: true
+    tty: true
+    shm_size: 1gb
+    environment:
+      - TERM
+      - COLORTERM
+    ports:
+      # 只在 login 時使用（noVNC），且只開放給本機
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - profile:/app/.profile
+
+volumes:
+  profile:

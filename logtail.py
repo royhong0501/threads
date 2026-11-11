@@ -19,13 +19,10 @@ import json
 import os
 import random
 import re
-import select
 import shutil
 import subprocess
 import sys
-import termios
 import time
-import tty
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,6 +30,21 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from playwright.async_api import async_playwright
+
+WINDOWS = os.name == "nt"
+if WINDOWS:
+    import msvcrt
+else:
+    import select
+    import termios
+    import tty
+
+# 提示訊息中顯示的啟動指令（容器內由 LOGTAIL_CMD 指定）
+CMD = os.environ.get("LOGTAIL_CMD") or (".\\logtail.cmd" if WINDOWS else "./logtail")
+# 額外的 Chrome 啟動參數（容器內需要 --no-sandbox 等）
+EXTRA_CHROME_ARGS = os.environ.get("LOGTAIL_CHROME_ARGS", "").split()
+# 登入視窗沒有關閉按鈕的環境（容器內的虛擬螢幕）：偵測到登入後自動關閉
+LOGIN_AUTOCLOSE = os.environ.get("LOGTAIL_LOGIN_AUTOCLOSE") == "1"
 
 BASE = "https://www.threads.com"
 HERE = Path(__file__).resolve().parent
@@ -50,6 +62,27 @@ C_ERR = "\x1b[38;5;167m"
 C_KEY = "\x1b[38;5;245m"
 C_TXT = "\x1b[38;5;250m"
 C_LINK = "\x1b[38;5;67m"
+
+
+def setup_console() -> None:
+    """Windows：輸出改用 UTF-8，並開啟主控台的 ANSI（VT）跳脫序列處理。"""
+    if not WINDOWS:
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        pass
 
 
 def link(url: str, label: str) -> str:
@@ -230,18 +263,34 @@ def threads_from_text(text: str) -> list[list[Post]]:
 
 
 # ───────────────────────── 瀏覽器 ─────────────────────────
+def chrome_version() -> str:
+    """已安裝的 Chrome 版本字串；找不到時回傳空字串。"""
+    if WINDOWS:
+        import winreg
+
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(root, r"Software\Google\Chrome\BLBeacon") as key:
+                    return str(winreg.QueryValueEx(key, "version")[0])
+            except OSError:
+                continue
+        return ""
+    return subprocess.run(["google-chrome", "--version"], capture_output=True, text=True).stdout
+
+
 def chrome_ua() -> str:
     try:
-        ver = subprocess.run(["google-chrome", "--version"], capture_output=True, text=True).stdout
-        major = re.search(r"(\d+)\.", ver).group(1)
+        major = re.search(r"(\d+)\.", chrome_version()).group(1)
     except Exception:
         major = "140"
-    return f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    platform = "Windows NT 10.0; Win64; x64" if WINDOWS else "X11; Linux x86_64"
+    return f"Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
 
 
 async def open_context(pw, headless: bool):
     PROFILE_DIR.mkdir(exist_ok=True)
-    os.chmod(PROFILE_DIR, 0o700)
+    if not WINDOWS:
+        os.chmod(PROFILE_DIR, 0o700)
     return await pw.chromium.launch_persistent_context(
         str(PROFILE_DIR),
         channel="chrome",
@@ -250,7 +299,7 @@ async def open_context(pw, headless: bool):
         locale="zh-TW",
         viewport={"width": 1280, "height": 900},
         # 登入(有視窗)與瀏覽(無頭)用同一種 cookie 加密方式，session 才能共用
-        args=["--password-store=basic", "--disable-blink-features=AutomationControlled"],
+        args=["--password-store=basic", "--disable-blink-features=AutomationControlled", *EXTRA_CHROME_ARGS],
         ignore_default_args=["--enable-automation"],
     )
 
@@ -459,21 +508,29 @@ def fake_line(i: int) -> str:
 
 # ───────────────────────── 鍵盤 ─────────────────────────
 class Keys:
+    """單鍵輸入。POSIX 用 termios 的 cbreak 模式；Windows 用 msvcrt 直接讀主控台按鍵。"""
+
     def __init__(self):
         self.fd = sys.stdin.fileno()
         self.saved = None
 
     def __enter__(self):
-        self.saved = termios.tcgetattr(self.fd)
-        tty.setcbreak(self.fd)
+        if not WINDOWS:
+            self.saved = termios.tcgetattr(self.fd)
+            tty.setcbreak(self.fd)
         return self
 
     def __exit__(self, *exc):
-        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        if not WINDOWS:
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
 
     def prompt(self, label: str) -> str:
         """暫時回到一般輸入模式讀一整行（中文輸入法可正常使用）。"""
-        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        if WINDOWS:
+            while msvcrt.kbhit():  # 丟掉先前殘留的按鍵
+                msvcrt.getwch()
+        else:
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
         try:
             sys.stdout.write(f"{C_KEY}{label}{RST}")
             sys.stdout.flush()
@@ -481,9 +538,18 @@ class Keys:
         except KeyboardInterrupt:
             return ""
         finally:
-            tty.setcbreak(self.fd)
+            if not WINDOWS:
+                tty.setcbreak(self.fd)
 
     def poll(self) -> str | None:
+        if WINDOWS:
+            if not msvcrt.kbhit():
+                return None
+            ch = msvcrt.getwch()
+            if ch in ("\x00", "\xe0"):  # 方向鍵、功能鍵：第二碼一併讀掉並忽略
+                msvcrt.getwch()
+                return None
+            return ch
         if select.select([self.fd], [], [], 0)[0]:
             data = os.read(self.fd, 32).decode(errors="ignore")
             return data[:1] if data else None
@@ -577,7 +643,7 @@ async def browse(args) -> int:
         ctx = await open_context(pw, headless=True)
         try:
             if not await is_logged_in(ctx):
-                print("尚未登入。請先執行： ./logtail login")
+                print(f"尚未登入。請先執行： {CMD} login")
                 return 1
             feed = "following" if args.following else "foryou"
             feed_label = {"foryou": "feed-fy", "following": "feed-fw"}
@@ -598,7 +664,7 @@ async def browse(args) -> int:
                 log("INFO", "main", "connecting upstream ...")
                 await src.open(url)
                 if "/login" in src.page.url:
-                    log("ERROR", "main", "session expired — run: ./logtail login")
+                    log("ERROR", "main", f"session expired — run: {CMD} login")
                     return 1
                 log("INFO", "main", f"stream ready, buffered={len(src.queue)}")
                 log("INFO", "main", HINT)
@@ -668,7 +734,10 @@ async def browse(args) -> int:
 
 async def login() -> int:
     print("即將開啟 Chrome 視窗，請在視窗中登入 Threads。")
-    print("登入完成並看到首頁動態後，直接關閉視窗即可（session 會存在 .profile/）。")
+    if LOGIN_AUTOCLOSE:
+        print("登入完成後視窗會自動關閉（session 會存在 .profile/）。")
+    else:
+        print("登入完成並看到首頁動態後，直接關閉視窗即可（session 會存在 .profile/）。")
     async with async_playwright() as pw:
         ctx = await open_context(pw, headless=False)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
@@ -681,6 +750,10 @@ async def login() -> int:
                 ok = await is_logged_in(ctx)
             except Exception:
                 break
+            if ok and LOGIN_AUTOCLOSE:
+                print("✓ 已偵測到登入成功，稍候自動關閉視窗 ...")
+                await asyncio.sleep(8)  # 等首頁載入完、cookie 寫入磁碟
+                break
             if ok and not getattr(login, "_told", False):
                 print("✓ 已偵測到登入成功，可以關閉視窗了。")
                 login._told = True
@@ -692,21 +765,35 @@ async def login() -> int:
             await ctx.close()
         except Exception:
             pass
-    print("登入完成，執行 ./logtail 開始瀏覽（進入後按 h 可看指令表）。" if ok else "未偵測到登入，請重試。")
+    print(f"登入完成，執行 {CMD} 開始瀏覽（進入後按 h 可看指令表）。" if ok else "未偵測到登入，請重試。")
     return 0 if ok else 1
 
 
 def logout() -> int:
-    """刪除本機保存的登入 session（整個 .profile/ 資料夾）。"""
-    if not PROFILE_DIR.exists():
+    """刪除本機保存的登入 session（.profile/ 資料夾的全部內容）。"""
+    if not PROFILE_DIR.exists() or not any(PROFILE_DIR.iterdir()):
         print("目前沒有登入資料。")
         return 0
+    # Windows 上 Chrome 剛關閉時檔案可能還被鎖住，稍等再試
+    for attempt in range(6):
+        try:
+            # 逐項刪除內容：.profile/ 本身可能是掛載點（Docker volume），無法移除
+            for child in PROFILE_DIR.iterdir():
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            break
+        except OSError as e:
+            if attempt == 5:
+                print(f"刪除失敗（logtail 是否還在執行？）：{e}")
+                return 1
+            time.sleep(0.5)
     try:
-        shutil.rmtree(PROFILE_DIR)
-    except OSError as e:
-        print(f"刪除失敗（logtail 是否還在執行？）：{e}")
-        return 1
-    print("已登出：本機的登入資料已刪除。要再使用請重新執行 ./logtail login")
+        PROFILE_DIR.rmdir()
+    except OSError:
+        pass
+    print(f"已登出：本機的登入資料已刪除。要再使用請重新執行 {CMD} login")
     return 0
 
 
@@ -722,6 +809,7 @@ def main() -> int:
     ap.add_argument("--img-width", type=int, default=56, help="圖片寬度（字元數，預設 56）")
     ap.add_argument("--raw-urls", action="store_true", help="終端機不支援超連結時，直接印出完整網址")
     args = ap.parse_args()
+    setup_console()
     if args.target == "logout":
         return logout()
     if args.target == "login":

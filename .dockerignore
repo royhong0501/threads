@@ -1,0 +1,5 @@
+.git
+.profile
+.venv
+__pycache__
+*.pyc

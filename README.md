@@ -11,31 +11,82 @@
 
 ## 需求
 
-- Linux，已安裝 Google Chrome
-- Python 3.12 以上
-- 支援 24-bit 色彩的終端機
+三種執行方式擇一：
+
+| 方式 | 需求 |
+|---|---|
+| Linux | Google Chrome、Python 3.12 以上 |
+| Windows | Windows 10 以上、Google Chrome、Python 3.12 以上，建議使用 Windows Terminal |
+| Docker | Docker（含 Compose），不需要另外安裝 Chrome 或 Python |
+
+終端機都需要支援 24-bit 色彩。
 
 ## 安裝
 
-專案內已有建好的 `.venv/`，可以直接用。在別台機器重建：
+### Linux
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install playwright pillow
 ```
 
+### Windows
+
+在 PowerShell 或命令提示字元中：
+
+```powershell
+py -m venv .venv
+.venv\Scripts\pip install playwright pillow
+```
+
 不需要執行 `playwright install`，程式直接使用系統的 Chrome。
 
+### Docker
+
+```bash
+docker compose build
+```
+
 ## 快速開始
+
+Linux：
 
 ```bash
 ./logtail login     # 第一次使用：向上游驗證（只需一次）
 ./logtail           # 開始檢視
 ```
 
+Windows：
+
+```powershell
+.\logtail.cmd login
+.\logtail.cmd
+```
+
 `login` 會開啟一個瀏覽器視窗，完成驗證並看到首頁後把視窗關掉即可。之後都在背景執行，不會有視窗。
 
 進入後按 `h` 可以看指令表。
+
+本文件其餘的範例都以 `./logtail` 表示；Windows 請換成 `.\logtail.cmd`，Docker 請換成 `docker compose run --rm --service-ports logtail`。
+
+### 使用 Docker
+
+```bash
+docker compose run --rm --service-ports logtail login   # 第一次使用
+docker compose run --rm --service-ports logtail         # 開始檢視
+```
+
+容器裡沒有螢幕，所以 `login` 會把瀏覽器視窗開在虛擬螢幕上，並印出一個網址：
+
+```
+http://localhost:6080/vnc.html?autoconnect=1&resize=scale
+```
+
+用主機的瀏覽器開啟這個網址，就能操作容器裡的登入視窗。偵測到驗證成功後視窗會自動關閉，指令也隨之結束。
+
+- 這個遠端畫面沒有密碼，連接埠只綁定在本機（`127.0.0.1:6080`），而且只在 `login` 期間存在。
+- 驗證資料存放在名為 `profile` 的 Docker volume 中，不在專案資料夾裡。
+- 選項與參數照常接在後面，例如 `docker compose run --rm --service-ports logtail -f -a`。
 
 ## 啟動方式
 
@@ -126,7 +177,7 @@ python3 -m venv .venv
 
 - 執行中按 `L`，再按 `y` 確認
 - 執行 `./logtail logout`（要先結束執行中的 logtail）
-- 直接刪除 `.profile/` 資料夾
+- 直接刪除 `.profile/` 資料夾（Docker 則是執行 `docker compose down -v` 刪除 volume）
 
 這只會清除本機資料，上游那邊的登入階段仍然有效。要徹底作廢，請到上游服務的帳號安全設定中，把這台裝置的登入階段移除。
 
@@ -147,6 +198,8 @@ python3 -m venv .venv
 | 啟動時出現 `ProcessSingleton` 或 profile 已被使用 | 已有另一個 logtail 在執行，先結束它 |
 | 連結不能點、出現奇怪字元 | 終端機不支援超連結，加上 `--raw-urls` |
 | 附件預覽顏色錯誤或亂碼 | 終端機不支援 24-bit 色彩 |
+| Windows 上連結不能點 | 舊版主控台不支援超連結，改用 Windows Terminal 或加上 `--raw-urls` |
+| Docker 的 `login` 網址打不開 | 指令要帶 `--service-ports`；並確認本機的 6080 連接埠沒有被占用 |
 | 持續顯示 `upstream idle` | 按 `R` 重新連線；仍無資料則可能是上游格式變動 |
 | 抓不到記錄或子記錄 | 上游格式變動，需調整 `logtail.py` 的 `find_threads` 與 `parse_post` |
 
@@ -154,7 +207,9 @@ python3 -m venv .venv
 
 | 檔案 | 說明 |
 |---|---|
-| `logtail` | 啟動腳本 |
+| `logtail` | 啟動腳本（Linux） |
+| `logtail.cmd` | 啟動腳本（Windows） |
 | `logtail.py` | 主程式 |
-| `.venv/` | Python 虛擬環境 |
+| `Dockerfile`、`compose.yaml`、`docker-entrypoint.sh` | Docker 映像檔與執行設定 |
+| `.venv/` | Python 虛擬環境（安裝後才會出現） |
 | `.profile/` | 驗證資料（驗證後才會出現） |
